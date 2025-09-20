@@ -45,11 +45,29 @@ app = FastAPI(
 class ChatRequest(BaseModel):
     message: str
 
+class CollegeRecommendation(BaseModel):
+    """College recommendation model"""
+    id: str
+    name: str
+    location: str
+    fees: Optional[int] = None
+    match_score: int
+    type: str
+    admission: str
+    highlights: List[str]
+    description: str
+    established: Optional[int] = None
+    ranking: Optional[int] = None
+    courses: List[str]
+    facilities: List[str]
+    source: str
+
 class ChatResponse(BaseModel):
     response: str
     is_academic: bool
     is_recommendation: bool
     timestamp: str
+    recommendations: Optional[List[CollegeRecommendation]] = None
 
 class UserPreferences(BaseModel):
     """User preferences extracted from conversation"""
@@ -591,14 +609,19 @@ Only redirect to college recommendations when users specifically ask for a list 
             Provide response as a JSON array with this exact structure:
             [
                 {{
+                    "id": "unique_identifier",
                     "name": "College Name",
                     "location": "City, State",
+                    "fees": 300000,
                     "type": "Government/Private/Deemed",
-                    "courses_offered": "Relevant courses offered",
-                    "website": "Official website if known or N/A",
-                    "admission_process": "Brief admission process",
-                    "approximate_fees": "Fee range if known",
-                    "notable_features": "Any notable features or rankings"
+                    "admission": "Entrance exam name or Own Entrance",
+                    "highlights": ["Notable feature 1", "Notable feature 2"],
+                    "description": "Brief description of the college",
+                    "established": 2005,
+                    "ranking": 25,
+                    "courses": ["Course1", "Course2", "Course3"],
+                    "facilities": ["Facility1", "Facility2", "Facility3"],
+                    "website": "Official website URL if known"
                 }}
             ]
             
@@ -625,38 +648,149 @@ Only redirect to college recommendations when users specifically ask for a list 
             logger.error(f"Error getting OpenAI recommendations: {e}")
             return []
     
-    def format_college_recommendations(self, filtered_colleges: List[Dict], openai_colleges: List[Dict], preferences: UserPreferences) -> str:
-        """Format college recommendations"""
+    def convert_database_college_to_json(self, college: College, match_score: int, match_reasons: List[str]) -> Dict:
+        """Convert database college to JSON format"""
+        try:
+            # Extract courses from the courses string
+            courses_list = []
+            if college.courses:
+                # Simple extraction - you might want to improve this based on your data format
+                courses_text = college.courses.lower()
+                if 'btech' in courses_text or 'b.tech' in courses_text:
+                    courses_list.append('B.Tech')
+                if 'mtech' in courses_text or 'm.tech' in courses_text:
+                    courses_list.append('M.Tech')
+                if 'mba' in courses_text:
+                    courses_list.append('MBA')
+                if 'mbbs' in courses_text:
+                    courses_list.append('MBBS')
+                if 'bca' in courses_text:
+                    courses_list.append('BCA')
+                if 'mca' in courses_text:
+                    courses_list.append('MCA')
+                if not courses_list:
+                    courses_list = ['Various Programs']
+            
+            # Extract fees if available in courses string
+            fees = None
+            if college.courses:
+                import re
+                fee_match = re.search(r'(\d+(?:,\d{3})*(?:\.\d{2})?)', college.courses)
+                if fee_match:
+                    try:
+                        fees = int(fee_match.group(1).replace(',', ''))
+                    except:
+                        fees = None
+            
+            # Generate highlights from match reasons and college data
+            highlights = match_reasons[:2] if match_reasons else []
+            if college.scholarship and college.scholarship.lower() != 'nan' and 'scholarship' not in str(highlights).lower():
+                highlights.append("Scholarship Available")
+            if len(highlights) < 2:
+                if college.type.lower() == 'government':
+                    highlights.append("Government Institution")
+                elif college.type.lower() == 'private':
+                    highlights.append("Private Institution")
+            
+            # Basic facilities (you might want to extract this from your data)
+            facilities = ["Library", "Campus", "Labs"]
+            if college.website and college.website.lower() != 'nan':
+                facilities.append("Online Portal")
+            
+            # Generate description
+            description = f"{college.name} is a {college.type.lower()} institution located in {college.location}."
+            if college.affiliation and college.affiliation.lower() != 'nan':
+                description += f" Affiliated with {college.affiliation}."
+            
+            # Combine website into source
+            source_url = college.website if college.website and college.website.lower() != 'nan' else "database"
+            
+            return {
+                "id": college.college_id,
+                "name": college.name,
+                "location": college.location,
+                "fees": fees,
+                "match_score": match_score,
+                "type": college.type,
+                "admission": college.admission_process if college.admission_process and college.admission_process.lower() != 'nan' else "Check Official Website",
+                "highlights": highlights[:3],  # Limit to 3 highlights
+                "description": description,
+                "established": None,  # Not available in your current data
+                "ranking": None,  # Not available in your current data
+                "courses": courses_list,
+                "facilities": facilities,
+                "source": source_url
+            }
+            
+        except Exception as e:
+            logger.error(f"Error converting database college to JSON: {e}")
+            return None
+    
+    def convert_openai_college_to_json(self, college_data: Dict, match_score: int = 75) -> Dict:
+        """Convert OpenAI college recommendation to standardized JSON format"""
+        try:
+            # Combine website into source
+            website = college_data.get('website', 'openai_knowledge')
+            source = website if website and website != 'N/A' else 'openai_knowledge'
+            
+            return {
+                "id": college_data.get('id', str(uuid.uuid4())),
+                "name": college_data.get('name', ''),
+                "location": college_data.get('location', ''),
+                "fees": college_data.get('fees'),
+                "match_score": match_score,
+                "type": college_data.get('type', ''),
+                "admission": college_data.get('admission', ''),
+                "highlights": college_data.get('highlights', []),
+                "description": college_data.get('description', ''),
+                "established": college_data.get('established'),
+                "ranking": college_data.get('ranking'),
+                "courses": college_data.get('courses', []),
+                "facilities": college_data.get('facilities', []),
+                "source": source + " " + ", " + "OpenAI_knowledge"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error converting OpenAI college to JSON: {e}")
+            return None
+    
+    def format_college_recommendations(self, filtered_colleges: List[Dict], openai_colleges: List[Dict], preferences: UserPreferences) -> tuple:
+        """Format college recommendations and return both JSON and text response"""
         recommendations = []
         
+        # Process database colleges
         for item in filtered_colleges:
             college = item['college']
-            rec = {
-                "college_id": college.college_id,
-                "name": college.name,
-                "type": college.type,
-                "affiliation": college.affiliation,
-                "location": college.location,
-                "website": college.website,
-                "contact": college.contact,
-                "email": college.email,
-                "courses": college.courses,
-                "scholarship": college.scholarship,
-                "admission_process": college.admission_process,
-                "match_score": item['score'],
-                "match_reasons": item['reasons'],
-                "source": "database"
-            }
-            recommendations.append(rec)
+            json_rec = self.convert_database_college_to_json(
+                college, 
+                item['score'], 
+                item['reasons']
+            )
+            if json_rec:
+                recommendations.append(json_rec)
         
+        # Process OpenAI colleges if needed
         if len(recommendations) < 3 and openai_colleges:
             needed = min(5 - len(recommendations), len(openai_colleges))
             for college in openai_colleges[:needed]:
-                college["source"] = "openai_knowledge"
-                college["match_score"] = 75
-                recommendations.append(college)
+                json_rec = self.convert_openai_college_to_json(college)
+                if json_rec:
+                    recommendations.append(json_rec)
         
-        return json.dumps({"college_recommendations": recommendations}, indent=2, ensure_ascii=False)
+        # Create text response
+        if recommendations:
+            text_response = f"Based on your preferences, I found {len(recommendations)} colleges that match your criteria:"
+            for i, rec in enumerate(recommendations, 1):
+                text_response += f"\n\n{i}. {rec['name']} ({rec['type']})"
+                text_response += f"\n   Location: {rec['location']}"
+                text_response += f"\n   Match Score: {rec['match_score']}%"
+                if rec['fees']:
+                    text_response += f"\n   Fees: ₹{rec['fees']:,}"
+                text_response += f"\n   Courses: {', '.join(rec['courses'])}"
+        else:
+            text_response = "I couldn't find specific colleges matching your preferences. Please provide more details about your requirements."
+            
+        return recommendations, text_response
     
     def get_response(self, message: str, chat_id: str) -> Dict[str, Any]:
         """Main processing function that routes between academic and recommendation pipelines"""
@@ -685,7 +819,8 @@ Could you please ask me something related to academics or learning?"""
                 "response": response,
                 "is_academic": False,
                 "is_recommendation": False,
-                "timestamp": timestamp
+                "timestamp": timestamp,
+                "recommendations": None
             }
         
         # Save user message
@@ -702,32 +837,18 @@ Could you please ask me something related to academics or learning?"""
                 # Filter colleges from database
                 filtered_colleges = self.college_data_manager.filter_colleges_by_preferences(preferences)
                 
-                if not filtered_colleges and preferences.location:
-                    response = f"I don't have specific colleges for {preferences.location} in my database. Let me suggest some well-known institutions in that area:\n\n"
+                # Get OpenAI recommendations if needed
+                openai_colleges = []
+                if len(filtered_colleges) < 3:
                     openai_colleges = self.get_openai_college_recommendations(preferences, preferences.location)
-                    
-                    if openai_colleges:
-                        final_response = response + self.format_college_recommendations([], openai_colleges, preferences)
-                    else:
-                        final_response = f"I apologize, but I couldn't find specific college recommendations for {preferences.location} with your preferences. Could you please provide more details about your requirements or consider nearby locations?"
                 
-                elif not filtered_colleges:
-                    final_response = "Let me suggest some colleges based on your preferences:\n\n"
-                    openai_colleges = self.get_openai_college_recommendations(preferences)
-                    if openai_colleges:
-                        final_response += self.format_college_recommendations([], openai_colleges, preferences)
-                    else:
-                        final_response = "I need more specific information about your preferences. Could you please tell me your preferred location, course type, or other requirements?"
-                
-                else:
-                    response = f"Based on your preferences, here are the best matching colleges:\n\n"
-                    openai_colleges = []
-                    if len(filtered_colleges) < 3:
-                        openai_colleges = self.get_openai_college_recommendations(preferences, preferences.location)
-                    
-                    final_response = response + self.format_college_recommendations(filtered_colleges, openai_colleges, preferences)
+                # Format recommendations
+                recommendations, text_response = self.format_college_recommendations(
+                    filtered_colleges, openai_colleges, preferences
+                )
                 
                 is_recommendation = True
+                final_response = text_response
             
             else:
                 logger.info("Regular academic query - using academic pipeline")
@@ -757,6 +878,7 @@ Could you please ask me something related to academics or learning?"""
                 )
                 
                 is_recommendation = False
+                recommendations = None
             
             # Save AI response
             self.db_manager.save_message(chat_id, 'ai', final_response, True, is_recommendation)
@@ -765,7 +887,8 @@ Could you please ask me something related to academics or learning?"""
                 "response": final_response,
                 "is_academic": True,
                 "is_recommendation": is_recommendation,
-                "timestamp": timestamp
+                "timestamp": timestamp,
+                "recommendations": recommendations
             }
             
         except Exception as e:
@@ -777,7 +900,8 @@ Could you please ask me something related to academics or learning?"""
                 "response": error_response,
                 "is_academic": True,
                 "is_recommendation": False,
-                "timestamp": timestamp
+                "timestamp": timestamp,
+                "recommendations": None
             }
 
 # Initialize environment variables
