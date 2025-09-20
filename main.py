@@ -67,7 +67,7 @@ class ChatResponse(BaseModel):
     is_academic: bool
     is_recommendation: bool
     timestamp: str
-    recommendations: Optional[List[CollegeRecommendation]] = None
+    recommendations: Optional[List[CollegeRecommendation]] = []
 
 class UserPreferences(BaseModel):
     """User preferences extracted from conversation"""
@@ -747,7 +747,7 @@ Only redirect to college recommendations when users specifically ask for a list 
                 "ranking": college_data.get('ranking'),
                 "courses": college_data.get('courses', []),
                 "facilities": college_data.get('facilities', []),
-                "source": source + " " + ", " + "OpenAI_knowledge"
+                "source": source
             }
             
         except Exception as e:
@@ -789,6 +789,7 @@ Only redirect to college recommendations when users specifically ask for a list 
                 text_response += f"\n   Courses: {', '.join(rec['courses'])}"
         else:
             text_response = "I couldn't find specific colleges matching your preferences. Please provide more details about your requirements."
+            recommendations = []  # Ensure it's always an empty array, never None
             
         return recommendations, text_response
     
@@ -820,7 +821,7 @@ Could you please ask me something related to academics or learning?"""
                 "is_academic": False,
                 "is_recommendation": False,
                 "timestamp": timestamp,
-                "recommendations": None
+                "recommendations": []
             }
         
         # Save user message
@@ -878,7 +879,7 @@ Could you please ask me something related to academics or learning?"""
                 )
                 
                 is_recommendation = False
-                recommendations = None
+                recommendations = []
             
             # Save AI response
             self.db_manager.save_message(chat_id, 'ai', final_response, True, is_recommendation)
@@ -901,7 +902,7 @@ Could you please ask me something related to academics or learning?"""
                 "is_academic": True,
                 "is_recommendation": False,
                 "timestamp": timestamp,
-                "recommendations": None
+                "recommendations": []
             }
 
 # Initialize environment variables
