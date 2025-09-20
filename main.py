@@ -50,16 +50,12 @@ class CollegeRecommendation(BaseModel):
     id: str
     name: str
     location: str
-    fees: Optional[int] = None
-    match_score: int
     type: str
-    admission: str
-    highlights: List[str]
-    description: str
-    established: Optional[int] = None
-    ranking: Optional[int] = None
-    courses: List[str]
-    facilities: List[str]
+    courses_offered: str
+    website: str
+    admission_process: str
+    approximate_fees: str
+    notable_features: str
     source: str
 
 class ChatResponse(BaseModel):
@@ -612,16 +608,13 @@ Only redirect to college recommendations when users specifically ask for a list 
                     "id": "unique_identifier",
                     "name": "College Name",
                     "location": "City, State",
-                    "fees": 300000,
                     "type": "Government/Private/Deemed",
-                    "admission": "Entrance exam name or Own Entrance",
-                    "highlights": ["Notable feature 1", "Notable feature 2"],
-                    "description": "Brief description of the college",
-                    "established": 2005,
-                    "ranking": 25,
-                    "courses": ["Course1", "Course2", "Course3"],
-                    "facilities": ["Facility1", "Facility2", "Facility3"],
-                    "website": "Official website URL if known"
+                    "courses_offered": "Main courses or programs offered",
+                    "website": "Official website URL if known",
+                    "admission_process": "Brief admission process description",
+                    "approximate_fees": "Fee range with currency",
+                    "notable_features": "Key highlights or notable features",
+                    "source": "openai_knowledge"
                 }}
             ]
             
@@ -652,74 +645,68 @@ Only redirect to college recommendations when users specifically ask for a list 
         """Convert database college to JSON format"""
         try:
             # Extract courses from the courses string
-            courses_list = []
+            courses_offered = "Various Programs"
             if college.courses:
-                # Simple extraction - you might want to improve this based on your data format
                 courses_text = college.courses.lower()
+                course_list = []
                 if 'btech' in courses_text or 'b.tech' in courses_text:
-                    courses_list.append('B.Tech')
+                    course_list.append('B.Tech')
                 if 'mtech' in courses_text or 'm.tech' in courses_text:
-                    courses_list.append('M.Tech')
+                    course_list.append('M.Tech')
                 if 'mba' in courses_text:
-                    courses_list.append('MBA')
+                    course_list.append('MBA')
                 if 'mbbs' in courses_text:
-                    courses_list.append('MBBS')
+                    course_list.append('MBBS')
                 if 'bca' in courses_text:
-                    courses_list.append('BCA')
+                    course_list.append('BCA')
                 if 'mca' in courses_text:
-                    courses_list.append('MCA')
-                if not courses_list:
-                    courses_list = ['Various Programs']
+                    course_list.append('MCA')
+                if course_list:
+                    courses_offered = ", ".join(course_list)
             
-            # Extract fees if available in courses string
-            fees = None
+            # Extract fees if available in courses string and format as string
+            approximate_fees = "Fee information not available"
             if college.courses:
                 import re
                 fee_match = re.search(r'(\d+(?:,\d{3})*(?:\.\d{2})?)', college.courses)
                 if fee_match:
                     try:
-                        fees = int(fee_match.group(1).replace(',', ''))
+                        fee_amount = int(fee_match.group(1).replace(',', ''))
+                        approximate_fees = f"INR {fee_amount:,} per year"
                     except:
-                        fees = None
+                        approximate_fees = "Fee information not available"
             
-            # Generate highlights from match reasons and college data
-            highlights = match_reasons[:2] if match_reasons else []
-            if college.scholarship and college.scholarship.lower() != 'nan' and 'scholarship' not in str(highlights).lower():
-                highlights.append("Scholarship Available")
-            if len(highlights) < 2:
-                if college.type.lower() == 'government':
-                    highlights.append("Government Institution")
-                elif college.type.lower() == 'private':
-                    highlights.append("Private Institution")
+            # Generate notable features from match reasons and college data
+            notable_features_list = []
+            if match_reasons:
+                notable_features_list.extend(match_reasons[:2])
+            if college.scholarship and college.scholarship.lower() != 'nan' and 'scholarship' not in str(notable_features_list).lower():
+                notable_features_list.append("Scholarship Available")
+            if college.type.lower() == 'government':
+                notable_features_list.append("Government Institution")
+            elif college.type.lower() == 'private':
+                notable_features_list.append("Private Institution")
             
-            # Basic facilities (you might want to extract this from your data)
-            facilities = ["Library", "Campus", "Labs"]
-            if college.website and college.website.lower() != 'nan':
-                facilities.append("Online Portal")
+            # Join notable features into a single string
+            notable_features = ". ".join(notable_features_list[:3]) if notable_features_list else "Quality education institution"
             
-            # Generate description
-            description = f"{college.name} is a {college.type.lower()} institution located in {college.location}."
-            if college.affiliation and college.affiliation.lower() != 'nan':
-                description += f" Affiliated with {college.affiliation}."
+            # Format admission process
+            admission_process = college.admission_process if college.admission_process and college.admission_process.lower() != 'nan' else "Check official website for admission details"
             
-            # Combine website into source
-            source_url = college.website if college.website and college.website.lower() != 'nan' else "database"
+            # Format website
+            website = college.website if college.website and college.website.lower() != 'nan' else "Website information not available"
             
             return {
                 "id": college.college_id,
                 "name": college.name,
                 "location": college.location,
-                "fees": fees,
-                "match_score": match_score,
                 "type": college.type,
-                "admission": college.admission_process if college.admission_process and college.admission_process.lower() != 'nan' else "Check Official Website",
-                "highlights": highlights[:3],  # Limit to 3 highlights
-                "description": description,
-                "established": None,  # Not available in your current data
-                "ranking": None,  # Not available in your current data
-                "courses": courses_list,
-                "facilities": facilities,
-                "source": source_url
+                "courses_offered": courses_offered,
+                "website": website,
+                "admission_process": admission_process,
+                "approximate_fees": approximate_fees,
+                "notable_features": notable_features,
+                "source": website if website != "Website information not available" else "OpenAI database"
             }
             
         except Exception as e:
@@ -729,25 +716,17 @@ Only redirect to college recommendations when users specifically ask for a list 
     def convert_openai_college_to_json(self, college_data: Dict, match_score: int = 75) -> Dict:
         """Convert OpenAI college recommendation to standardized JSON format"""
         try:
-            # Combine website into source
-            website = college_data.get('website', 'openai_knowledge')
-            source = website if website and website != 'N/A' else 'openai_knowledge'
-            
             return {
                 "id": college_data.get('id', str(uuid.uuid4())),
                 "name": college_data.get('name', ''),
                 "location": college_data.get('location', ''),
-                "fees": college_data.get('fees'),
-                "match_score": match_score,
                 "type": college_data.get('type', ''),
-                "admission": college_data.get('admission', ''),
-                "highlights": college_data.get('highlights', []),
-                "description": college_data.get('description', ''),
-                "established": college_data.get('established'),
-                "ranking": college_data.get('ranking'),
-                "courses": college_data.get('courses', []),
-                "facilities": college_data.get('facilities', []),
-                "source": source
+                "courses_offered": college_data.get('courses_offered', ''),
+                "website": college_data.get('website', ''),
+                "admission_process": college_data.get('admission_process', ''),
+                "approximate_fees": college_data.get('approximate_fees', ''),
+                "notable_features": college_data.get('notable_features', ''),
+                "source": college_data.get('source', 'openai_knowledge')
             }
             
         except Exception as e:
@@ -783,10 +762,9 @@ Only redirect to college recommendations when users specifically ask for a list 
             for i, rec in enumerate(recommendations, 1):
                 text_response += f"\n\n{i}. {rec['name']} ({rec['type']})"
                 text_response += f"\n   Location: {rec['location']}"
-                text_response += f"\n   Match Score: {rec['match_score']}%"
-                if rec['fees']:
-                    text_response += f"\n   Fees: ₹{rec['fees']:,}"
-                text_response += f"\n   Courses: {', '.join(rec['courses'])}"
+                text_response += f"\n   Courses: {rec['courses_offered']}"
+                text_response += f"\n   Fees: {rec['approximate_fees']}"
+                text_response += f"\n   Features: {rec['notable_features']}"
         else:
             text_response = "I couldn't find specific colleges matching your preferences. Please provide more details about your requirements."
             recommendations = []  # Ensure it's always an empty array, never None
