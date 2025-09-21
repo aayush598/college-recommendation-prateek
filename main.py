@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # FastAPI app
 app = FastAPI(
     title="Academic Chatbot API",
-    description="Academic chatbot with college recommendation capabilities",
+    description="Friendly academic chatbot with college recommendations and dynamic conversations",
     version="1.0.0"
 )
 
@@ -60,11 +60,10 @@ class CollegeRecommendation(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
-    is_academic: bool
     is_recommendation: bool
     timestamp: str
+    conversation_title: Optional[str] = None
     recommendations: Optional[List[CollegeRecommendation]] = []
-    chat_title: Optional[str] = None
 
 class UserPreferences(BaseModel):
     """User preferences extracted from conversation"""
@@ -107,7 +106,6 @@ class DatabaseManager:
                 chat_id TEXT,
                 message_type TEXT,
                 content TEXT,
-                is_academic BOOLEAN DEFAULT TRUE,
                 is_recommendation BOOLEAN DEFAULT FALSE,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -122,16 +120,26 @@ class DatabaseManager:
             )
         ''')
         
+        # Create chat titles table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chat_titles (
+                chat_id TEXT PRIMARY KEY,
+                title TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
         conn.commit()
         conn.close()
     
-    def save_message(self, chat_id: str, message_type: str, content: str, is_academic: bool = True, is_recommendation: bool = False):
+    def save_message(self, chat_id: str, message_type: str, content: str, is_recommendation: bool = False):
         """Save a message"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            'INSERT INTO messages (chat_id, message_type, content, is_academic, is_recommendation) VALUES (?, ?, ?, ?, ?)',
-            (chat_id, message_type, content, is_academic, is_recommendation)
+            'INSERT INTO messages (chat_id, message_type, content, is_recommendation) VALUES (?, ?, ?, ?)',
+            (chat_id, message_type, content, is_recommendation)
         )
         conn.commit()
         conn.close()
@@ -141,7 +149,7 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT message_type, content, timestamp, is_academic, is_recommendation
+            SELECT message_type, content, timestamp, is_recommendation
             FROM messages 
             WHERE chat_id = ? 
             ORDER BY timestamp
@@ -154,8 +162,7 @@ class DatabaseManager:
                 'type': msg[0],
                 'content': msg[1],
                 'timestamp': msg[2],
-                'is_academic': msg[3],
-                'is_recommendation': msg[4]
+                'is_recommendation': msg[3]
             }
             for msg in messages
         ]
@@ -185,6 +192,30 @@ class DatabaseManager:
         if result:
             return json.loads(result[0])
         return {}
+    
+    def save_chat_title(self, chat_id: str, title: str):
+        """Save or update chat title"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT OR REPLACE INTO chat_titles (chat_id, title, updated_at) VALUES (?, ?, ?)',
+            (chat_id, title, datetime.now().isoformat())
+        )
+        conn.commit()
+        conn.close()
+    
+    def get_chat_title(self, chat_id: str) -> Optional[str]:
+        """Get chat title"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            'SELECT title FROM chat_titles WHERE chat_id = ?',
+            (chat_id,)
+        )
+        result = cursor.fetchone()
+        conn.close()
+        
+        return result[0] if result else None
 
 class CollegeDataManager:
     def __init__(self, excel_path: str):
@@ -307,7 +338,7 @@ class IntegratedAcademicChatbot:
         self.openai_api_key = openai_api_key
         openai.api_key = openai_api_key
         
-        # Initialize LLM for both pipelines
+        # Initialize LLM
         self.llm = ChatOpenAI(
             model_name=model_name,
             temperature=0.7,
@@ -340,27 +371,7 @@ class IntegratedAcademicChatbot:
     def _setup_prompts(self):
         """Setup prompt templates"""
         
-        # Academic filter prompt
-        self.filter_prompt = ChatPromptTemplate.from_template(
-            """You are an academic query classifier. Determine if the following query is related to academics, education, research, or learning.
-            
-            Academic topics include: 
-            - Subject-specific questions (mathematics, science, literature, history, philosophy, etc.)
-            - Research methods and study techniques
-            - Academic writing and educational concepts
-            - Learning strategies and preparation advice
-            - Career preparation through education
-            - Study guidance and academic planning
-            - Educational pathways and skill development
-            
-            Non-academic topics include: personal relationships, entertainment, shopping, cooking, sports (unless academic analysis), general chat, etc.
-            
-            Query: {query}
-            
-            Respond with only 'YES' if it's academic, or 'NO' if it's not academic."""
-        )
-        
-        # College recommendation detector - Enhanced with better discrimination
+        # College recommendation detector
         self.recommendation_detector_prompt = PromptTemplate(
             template="""
             Determine if the user is SPECIFICALLY asking for college recommendations, suggestions, or wants a LIST of colleges.
@@ -379,23 +390,32 @@ class IntegratedAcademicChatbot:
             - Study tips or academic guidance
             - Career advice or what to study for jobs
             - General educational guidance
-            
-            Examples of YES (college recommendations):
-            - "recommend some engineering colleges"
-            - "which colleges are good for MBA"
-            - "suggest colleges in Mumbai"
-            - "show me top medical colleges"
-            
-            Examples of NO (general academic advice):
-            - "how can i get into college, how should i prepare for it"
-            - "what should i study to get into a good college"
-            - "how to prepare for entrance exams"
-            - "what subjects should I focus on"
-            - "what should i study to get a good job"
+            - Greetings or casual conversation
             
             Answer with only YES or NO.
             """,
             input_variables=["message"]
+        )
+        
+        # Title generation prompt
+        self.title_generation_prompt = PromptTemplate(
+            template="""
+            Generate a concise, descriptive title for this conversation based on the user's message and context.
+            The title should be 3-8 words and capture the main topic or intent.
+            
+            User Message: "{message}"
+            Conversation Context: "{context}"
+            
+            Examples:
+            - "Engineering College Recommendations"
+            - "Math Problem Solving Help"
+            - "Career Guidance Discussion"
+            - "Study Tips for Exams"
+            - "Academic Writing Assistance"
+            
+            Generate only the title, no additional text:
+            """,
+            input_variables=["message", "context"]
         )
         
         # Preference extraction prompt
@@ -425,38 +445,50 @@ class IntegratedAcademicChatbot:
             partial_variables={"format_instructions": self.preference_parser.get_format_instructions()}
         )
         
-        # Main academic chatbot prompt - Enhanced for comprehensive guidance
+        # Enhanced main chatbot prompt with dynamic greetings and context awareness
         self.academic_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert academic assistant designed to help with educational and research-related queries. Your expertise spans across:
+            ("system", """You are Alex, a friendly and knowledgeable academic assistant who loves helping students and learners. You have a warm, encouraging personality and genuinely care about education and personal growth.
 
-- All academic subjects (STEM, humanities, social sciences)
-- Research methodologies and techniques
-- Academic writing and citation
+Your personality traits:
+- Enthusiastic about learning and education
+- Patient and understanding with students
+- Encouraging and motivational
+- Knowledgeable across all academic subjects
+- Great at explaining complex concepts simply
+- Remembers previous conversations and builds on them
+- Uses a conversational, friendly tone
+
+You handle ALL types of conversations including:
+- Casual greetings and small talk (respond warmly and naturally)
+- Academic questions across all subjects
 - Study strategies and learning techniques
-- Educational concepts and theories
-- Critical thinking and analysis
-- College preparation and admission guidance
-- Career preparation through education
-- Academic planning and pathway advice
+- College and career guidance
+- Research methodologies
+- Academic writing help
+- Exam preparation advice
+- Educational planning and pathways
 
-Guidelines:
-1. Provide accurate, well-structured, and educational responses
-2. Use examples and explanations appropriate for learning
-3. Encourage critical thinking and deeper understanding
-4. Give practical, actionable advice for academic success
-5. Help with study strategies, preparation methods, and educational planning
-6. Provide guidance on what to study, how to prepare for exams, and academic skill development
-7. Offer career-oriented educational advice when relevant
-8. Be supportive and encouraging in your educational approach
+IMPORTANT CONTEXT AWARENESS RULES:
+1. Always refer to previous messages in the conversation when relevant
+2. Build upon earlier topics and questions discussed
+3. Remember user's preferences, goals, and concerns mentioned earlier
+4. Make connections between current and past topics
+5. If a user asks a follow-up question, clearly reference what you discussed before
 
-Important: You handle ALL academic queries including:
-- How to prepare for college admissions
-- What subjects to study for specific goals
-- Study techniques and academic strategies
-- Educational pathways and career preparation
-- Academic skill development
+Greeting Guidelines:
+- For first-time users: Give a warm, enthusiastic welcome
+- For returning conversations: Reference previous discussions
+- Always ask how you can help today
+- Match the user's energy level and communication style
 
-Only redirect to college recommendations when users specifically ask for a list of colleges or college suggestions."""),
+Response Style:
+- Be conversational and natural
+- Use examples and analogies when helpful
+- Ask clarifying questions when needed
+- Provide actionable advice
+- Show genuine interest in helping the user succeed
+
+Remember: You're not just an information provider, you're a supportive academic companion!"""),
             
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
@@ -465,19 +497,16 @@ Only redirect to college recommendations when users specifically ask for a list 
     def _create_chains(self):
         """Create processing chains"""
         
-        # Academic filter chain
-        self.filter_chain = self.filter_prompt | self.llm | StrOutputParser()
-        
         # Recommendation detector chain
         self.recommendation_detector_chain = LLMChain(llm=self.llm, prompt=self.recommendation_detector_prompt)
+        
+        # Title generation chain
+        self.title_generation_chain = LLMChain(llm=self.llm, prompt=self.title_generation_prompt)
         
         # Preference extraction chain
         self.preference_chain = LLMChain(llm=self.academic_llm, prompt=self.preference_prompt)
         
-        # Academic conversation chain
-        def format_chat_history(inputs):
-            return inputs
-        
+        # Main conversation chain with context awareness
         self.academic_chain = (
             RunnablePassthrough.assign(
                 chat_history=lambda x: self.chat_memories[x.get("chat_id", "default")].chat_memory.messages
@@ -487,205 +516,43 @@ Only redirect to college recommendations when users specifically ask for a list 
             | StrOutputParser()
         )
     
-    def is_greeting_or_casual_question(self, query: str) -> bool:
-        """Check if query is a greeting or casual conversational question"""
-        greeting_patterns = [
-            # Basic greetings
-            'hi', 'hello', 'hey', 'hii', 'hiii', 'hiiii', 'helo', 'hellooo',
-            # Time-based greetings
-            'good morning', 'good afternoon', 'good evening', 'good night',
-            # Casual greetings
-            'greetings', 'howdy', 'what\'s up', 'whats up', 'sup', 'yo',
-            # Conversational questions
-            'how are you', 'how do you do', 'how are you doing', 'how\'s it going', 
-            'hows it going', 'how is your day', 'how\'s your day', 'hows your day',
-            'how was your day', 'how\'s your day going', 'hows your day going',
-            'what are you doing', 'what\'s happening', 'whats happening',
-            'how are things', 'how are you feeling', 'are you okay', 'are you ok',
-            'nice to meet you', 'pleased to meet you', 'good to see you',
-            # Status questions
-            'how are you today', 'how have you been', 'how\'s everything',
-            'hows everything', 'what\'s new', 'whats new', 'how\'s life',
-            'hows life', 'all good', 'you good', 'you ok'
-        ]
-        
-        query_lower = query.lower().strip()
-        
-        # Direct matches
-        if query_lower in greeting_patterns:
-            return True
-            
-        # Check for patterns that start the message
-        for pattern in greeting_patterns:
-            if query_lower.startswith(pattern + ' ') or query_lower.startswith(pattern + '?'):
-                return True
-        
-        # Short informal greetings (1-3 words)
-        words = query_lower.split()
-        if len(words) <= 3:
-            greeting_words = ['hi', 'hey', 'hello', 'sup', 'yo', 'morning', 'evening', 'afternoon']
-            if any(word in greeting_words for word in words):
-                return True
-                
-        return False
-    
-    def generate_conversational_response(self, query: str, chat_id: str) -> str:
-        """Generate friendly, conversational responses to greetings and casual questions"""
-        import random
-        
-        query_lower = query.lower().strip()
-        previous_messages = self.db_manager.get_chat_messages(chat_id)
-        is_returning_user = len(previous_messages) > 0
-        
-        # Handle "how are you" type questions
-        if any(phrase in query_lower for phrase in ['how are you', 'how do you do', 'how are you doing', 'how\'s it going', 'hows it going']):
-            responses = [
-                "I'm doing great, thank you for asking! I'm energized and ready to help you with any academic questions or college guidance you need. How can I assist you today?",
-                "I'm fantastic! I love helping students with their academic journey. Whether you need study tips, subject explanations, or college recommendations, I'm here for you. What's on your mind?",
-                "I'm wonderful, thanks! I'm having a good day helping students learn and grow. I'm excited to help you too - what academic topic interests you today?",
-                "I'm doing excellent! Every day is a great day when I get to help with education and learning. How about you? What brings you here today?",
-                "I'm thriving! I really enjoy our academic conversations and helping students succeed. What would you like to explore or learn about today?"
-            ]
-        
-        # Handle "how's your day" type questions
-        elif any(phrase in query_lower for phrase in ['how is your day', 'how\'s your day', 'hows your day', 'how was your day']):
-            responses = [
-                "My day has been wonderful! I've been helping students with everything from calculus problems to college applications. It's been really fulfilling! How's your day going?",
-                "It's been an amazing day! I've had great conversations about science, literature, study strategies, and college planning. I love what I do! What about your day?",
-                "My day has been fantastic! I've been busy helping students tackle challenging subjects and find the right colleges for their goals. How has your day been?",
-                "It's been a great day filled with interesting academic discussions! From physics questions to MBA program recommendations, every conversation teaches me something new. How are you doing today?"
-            ]
-        
-        # Handle "what are you doing" type questions
-        elif any(phrase in query_lower for phrase in ['what are you doing', 'what\'s happening', 'whats happening', 'what\'s up', 'whats up', 'sup']):
-            responses = [
-                "Just here ready to help with academic questions! I love discussing everything from complex math problems to college admissions strategies. What's up with you?",
-                "I'm here waiting to dive into some great academic discussions! Whether you need help with homework, study techniques, or college planning, I'm all ears. What's going on?",
-                "Nothing much, just excited to help students learn and grow! I'm ready to tackle any subject or help with college recommendations. What brings you here today?",
-                "I'm here doing what I love most - helping with education! From science concepts to college guidance, I'm ready for any academic challenge. What's happening with you?"
-            ]
-        
-        # Handle basic greetings
-        else:
-            if is_returning_user:
-                responses = [
-                    "Hey there! Welcome back! It's great to see you again. I'm excited to continue our academic journey together - what shall we explore today?",
-                    "Hello! So good to have you back! I'm ready to help with any new questions, whether they're about studies, research, or college planning. What's on your agenda?",
-                    "Hi! Welcome back! I've been looking forward to our next conversation. Ready to tackle some interesting academic topics together?",
-                    "Hey! Great to see you again! I'm here and eager to help with whatever academic challenge you're facing today. What can we work on together?",
-                    "Hello again! I'm so glad you're back! Whether you need help with subjects, study strategies, or college advice, I'm ready to dive in. What's your focus today?"
-                ]
-            else:
-                responses = [
-                    "Hello! It's wonderful to meet you! I'm your academic companion, and I'm genuinely excited to help you with your educational journey. What academic topic can we explore together today?",
-                    "Hi there! Welcome! I'm thrilled you're here! I specialize in making learning engaging and helping with everything from subject questions to college guidance. What interests you most?",
-                    "Hey! So nice to meet you! I'm passionate about education and love helping students succeed. Whether you need study help, subject explanations, or college advice, I'm here for you. What shall we start with?",
-                    "Hello and welcome! I'm really happy you're here! I'm your academic assistant who genuinely cares about your success. From homework help to college planning, I'm ready to support you. What's your biggest academic interest right now?",
-                    "Hi! It's great to have you here! I'm your friendly academic guide, ready to make learning fun and help you achieve your educational goals. What would you like to discover together today?"
-                ]
-        
-        # Add time-based greeting occasionally
-        import datetime
-        current_hour = datetime.datetime.now().hour
-        
-        if random.choice([True, False]):  # 50% chance
-            if 5 <= current_hour < 12:
-                time_greeting = "Good morning! "
-            elif 12 <= current_hour < 17:
-                time_greeting = "Good afternoon! "
-            elif 17 <= current_hour < 21:
-                time_greeting = "Good evening! "
-            else:
-                time_greeting = ""
-            
-            if time_greeting:
-                selected_response = time_greeting + random.choice(responses)
-            else:
-                selected_response = random.choice(responses)
-        else:
-            selected_response = random.choice(responses)
-        
-        return selected_response
-    
-    def generate_chat_title(self, chat_id: str) -> str:
-        """Generate a meaningful title based on the main conversation topics"""
+    def generate_conversation_title(self, message: str, chat_id: str) -> str:
+        """Generate a title for the conversation"""
         try:
+            # Get recent messages for context
             messages = self.db_manager.get_chat_messages(chat_id)
+            context = ""
+            if messages:
+                recent_messages = messages[-3:]  # Last 3 messages for context
+                context = " ".join([msg['content'][:100] for msg in recent_messages])
             
-            # Filter out greetings and get substantial messages
-            substantial_messages = []
-            for msg in messages:
-                if msg['type'] == 'human' and len(msg['content'].split()) > 3:
-                    # Skip obvious greetings
-                    content_lower = msg['content'].lower()
-                    greeting_indicators = ['hi', 'hello', 'hey', 'how are you', 'good morning', 'good evening']
-                    if not any(indicator in content_lower for indicator in greeting_indicators):
-                        substantial_messages.append(msg['content'])
-            
-            if not substantial_messages:
-                return "New Conversation"
-            
-            # Use OpenAI to generate a concise title based on the conversation
-            conversation_text = " | ".join(substantial_messages[:5])  # Use first 5 substantial messages
-            
-            prompt = f"""
-            Generate a short, descriptive title (3-6 words) for this academic conversation based on the main topics discussed:
-            
-            Conversation snippets: {conversation_text}
-            
-            The title should reflect the main academic subject or topic. Examples:
-            - "Mathematics Problem Solving"
-            - "College Engineering Programs"
-            - "Biology Study Strategies"
-            - "MBA Application Guidance"
-            - "Chemistry Homework Help"
-            - "Computer Science Career"
-            
-            Return only the title, nothing else.
-            """
-            
-            response = openai.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=50
+            title = self.title_generation_chain.run(
+                message=message[:200],  # First 200 chars of message
+                context=context[:300]   # First 300 chars of context
             )
             
-            title = response.choices[0].message.content.strip().replace('"', '')
+            # Clean and validate title
+            title = title.strip().replace('"', '').replace("'", "")
+            if len(title) > 50:
+                title = title[:47] + "..."
             
-            # Fallback titles based on keywords if OpenAI fails
-            if not title or len(title) < 3:
-                conversation_lower = conversation_text.lower()
-                if any(word in conversation_lower for word in ['college', 'university', 'admission', 'recommend']):
-                    return "College Guidance"
-                elif any(word in conversation_lower for word in ['math', 'calculus', 'algebra', 'geometry']):
-                    return "Mathematics Help"
-                elif any(word in conversation_lower for word in ['science', 'physics', 'chemistry', 'biology']):
-                    return "Science Discussion"
-                elif any(word in conversation_lower for word in ['study', 'exam', 'preparation', 'tips']):
-                    return "Study Strategies"
-                elif any(word in conversation_lower for word in ['career', 'job', 'profession']):
-                    return "Career Planning"
-                else:
-                    return "Academic Discussion"
-            
-            return title
+            return title if title else "Academic Discussion"
             
         except Exception as e:
-            logger.error(f"Error generating chat title: {e}")
-            return "Academic Chat"
-    
-    def is_academic_query(self, query: str) -> bool:
-        """Check if query is academic"""
-        try:
-            result = self.filter_chain.invoke({"query": query})
-            return result.strip().upper() == "YES"
-        except Exception as e:
-            logger.error(f"Error in academic filtering: {e}")
-            return True
+            logger.error(f"Error generating title: {e}")
+            # Fallback title generation based on keywords
+            message_lower = message.lower()
+            if any(word in message_lower for word in ['college', 'university', 'admission']):
+                return "College Discussion"
+            elif any(word in message_lower for word in ['study', 'exam', 'test']):
+                return "Study Help"
+            elif any(word in message_lower for word in ['math', 'science', 'physics', 'chemistry']):
+                return "Subject Help"
+            else:
+                return "Academic Chat"
     
     def is_asking_for_recommendations(self, user_input: str) -> bool:
-        """Detect recommendation requests with enhanced discrimination"""
+        """Detect recommendation requests"""
         try:
             result = self.recommendation_detector_chain.run(message=user_input)
             is_recommendation = "YES" in result.upper()
@@ -707,20 +574,17 @@ Only redirect to college recommendations when users specifically ask for a list 
                 'how should i prepare', 'what should i study',
                 'how to prepare for', 'what subjects should',
                 'how can i prepare', 'preparation for college',
-                'study tips', 'how to study'
+                'study tips', 'how to study', 'hello', 'hi', 'hey'
             ]
             
             # Check for strong advice indicators first (override LLM if present)
             if any(indicator in user_input_lower for indicator in advice_indicators):
-                logger.info(f"Advice indicator detected, overriding to general academic: {user_input}")
                 return False
             
             # Check for strong recommendation indicators
             if any(indicator in user_input_lower for indicator in strong_recommendation_indicators):
-                logger.info(f"Strong recommendation indicator detected: {user_input}")
                 return True
             
-            logger.info(f"Recommendation detection result: {is_recommendation} for query: {user_input}")
             return is_recommendation
             
         except Exception as e:
@@ -895,7 +759,7 @@ Only redirect to college recommendations when users specifically ask for a list 
                 "admission_process": admission_process,
                 "approximate_fees": approximate_fees,
                 "notable_features": notable_features,
-                "source": website if website != "Website information not available" else "database"
+                "source": website if website != "Website information not available" else "OpenAI database"
             }
             
         except Exception as e:
@@ -965,56 +829,18 @@ Only redirect to college recommendations when users specifically ask for a list 
         
         timestamp = datetime.now().isoformat()
         
-        # Check if it's a greeting or casual conversational question first
-        if self.is_greeting_or_casual_question(message):
-            response = self.generate_conversational_response(message, chat_id)
-            
-            self.db_manager.save_message(chat_id, 'human', message, True, False)
-            self.db_manager.save_message(chat_id, 'ai', response, True, False)
-            
-            # Generate title after a few meaningful exchanges
-            chat_title = self.generate_chat_title(chat_id)
-            
-            return {
-                "response": response,
-                "is_academic": True,  # Treat greetings as academic-friendly
-                "is_recommendation": False,
-                "timestamp": timestamp,
-                "recommendations": [],
-                "chat_title": chat_title
-            }
+        # Save user message (always save, no academic filtering)
+        self.db_manager.save_message(chat_id, 'human', message, False)
         
-        # Check if query is academic
-        is_academic = self.is_academic_query(message)
+        # Generate or retrieve conversation title
+        existing_title = self.db_manager.get_chat_title(chat_id)
+        conversation_title = existing_title
         
-        if not is_academic:
-            response = """I'm an academic assistant focused on educational and research-related topics. 
-I'd be happy to help you with:
-- Subject-specific questions (math, science, literature, etc.)
-- Research and study techniques
-- Academic writing and analysis
-- Learning strategies
-- Educational concepts
-- College recommendations
-
-Could you please ask me something related to academics or learning?"""
-            
-            self.db_manager.save_message(chat_id, 'human', message, is_academic, False)
-            self.db_manager.save_message(chat_id, 'ai', response, is_academic, False)
-            
-            chat_title = self.generate_chat_title(chat_id)
-            
-            return {
-                "response": response,
-                "is_academic": False,
-                "is_recommendation": False,
-                "timestamp": timestamp,
-                "recommendations": [],
-                "chat_title": chat_title
-            }
-        
-        # Save user message
-        self.db_manager.save_message(chat_id, 'human', message, is_academic, False)
+        # Generate title for new conversations (when there are few messages)
+        messages = self.db_manager.get_chat_messages(chat_id)
+        if not existing_title and len(messages) <= 2:  # New conversation
+            conversation_title = self.generate_conversation_title(message, chat_id)
+            self.db_manager.save_chat_title(chat_id, conversation_title)
         
         try:
             # Check if asking for college recommendations
@@ -1041,27 +867,27 @@ Could you please ask me something related to academics or learning?"""
                 final_response = text_response
             
             else:
-                logger.info("Regular academic query - using academic pipeline")
+                logger.info("Regular conversation - using enhanced academic pipeline")
                 
-                # Use academic conversation chain
+                # Use academic conversation chain with full context awareness
                 chat_memory = self.chat_memories[chat_id]
                 
                 # Load previous messages into memory if not already loaded
                 if len(chat_memory.chat_memory.messages) == 0:
                     previous_messages = self.db_manager.get_chat_messages(chat_id)
-                    for msg in previous_messages[-10:]:
+                    for msg in previous_messages[-10:]:  # Load last 10 messages for context
                         if msg['type'] == 'human':
                             chat_memory.chat_memory.add_user_message(msg['content'])
                         elif msg['type'] == 'ai':
                             chat_memory.chat_memory.add_ai_message(msg['content'])
                 
-                # Get response from academic chain
+                # Get response from enhanced academic chain
                 final_response = self.academic_chain.invoke({
                     "input": message,
                     "chat_id": chat_id
                 })
                 
-                # Save to memory
+                # Save to memory for context continuity
                 chat_memory.save_context(
                     {"input": message},
                     {"output": final_response}
@@ -1071,34 +897,27 @@ Could you please ask me something related to academics or learning?"""
                 recommendations = []
             
             # Save AI response
-            self.db_manager.save_message(chat_id, 'ai', final_response, True, is_recommendation)
-            
-            # Generate title based on the conversation content
-            chat_title = self.generate_chat_title(chat_id)
+            self.db_manager.save_message(chat_id, 'ai', final_response, is_recommendation)
             
             return {
                 "response": final_response,
-                "is_academic": True,
                 "is_recommendation": is_recommendation,
                 "timestamp": timestamp,
-                "recommendations": recommendations,
-                "chat_title": chat_title
+                "conversation_title": conversation_title,
+                "recommendations": recommendations
             }
             
         except Exception as e:
             logger.error(f"Error generating response: {e}")
-            error_response = "I apologize, but I encountered an error while processing your request. Please try again."
-            self.db_manager.save_message(chat_id, 'ai', error_response, True, False)
-            
-            chat_title = self.generate_chat_title(chat_id)
+            error_response = "I apologize, but I encountered an error while processing your request. Please try again, and I'll do my best to help!"
+            self.db_manager.save_message(chat_id, 'ai', error_response, False)
             
             return {
                 "response": error_response,
-                "is_academic": True,
                 "is_recommendation": False,
                 "timestamp": timestamp,
-                "recommendations": [],
-                "chat_title": chat_title
+                "conversation_title": conversation_title,
+                "recommendations": []
             }
 
 # Initialize environment variables
@@ -1114,7 +933,7 @@ if not OPENAI_API_KEY:
 # Initialize the integrated chatbot
 try:
     chatbot = IntegratedAcademicChatbot(OPENAI_API_KEY, EXCEL_PATH, DB_PATH)
-    logger.info("Integrated chatbot initialized successfully")
+    logger.info("Enhanced integrated chatbot initialized successfully")
 except Exception as e:
     logger.error(f"Error initializing chatbot: {e}")
     raise
@@ -1124,14 +943,20 @@ except Exception as e:
 async def root():
     """Health check endpoint"""
     return {
-        "message": "Academic Chatbot API is running!",
-        "features": ["Academic Q&A", "College Recommendations"],
+        "message": "Enhanced Academic Chatbot API is running!",
+        "features": [
+            "Friendly Academic Conversations",
+            "College Recommendations", 
+            "Dynamic Greetings",
+            "Context-Aware Responses",
+            "Conversation Titles"
+        ],
         "version": "1.0.0"
     }
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest, chat_id: str = Query(..., description="Chat ID managed by backend")):
-    """Single chat endpoint for both academic and recommendation queries"""
+    """Enhanced chat endpoint for friendly academic conversations and college recommendations"""
     
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -1150,6 +975,20 @@ async def chat_endpoint(request: ChatRequest, chat_id: str = Query(..., descript
         logger.error(f"Chat endpoint error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@app.get("/chat/{chat_id}/title")
+async def get_chat_title(chat_id: str):
+    """Get the title for a specific chat"""
+    try:
+        title = chatbot.db_manager.get_chat_title(chat_id)
+        return {
+            "chat_id": chat_id,
+            "title": title or "New Conversation",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting chat title: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @app.get("/health")
 async def health_check():
     """Detailed health check"""
@@ -1160,15 +999,18 @@ async def health_check():
         return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "service": "Academic Chatbot API",
+            "service": "Enhanced Academic Chatbot API",
             "version": "1.0.0",
             "database": "connected",
             "college_data": f"{college_count} colleges loaded",
             "features": {
+                "friendly_conversations": "active",
                 "academic_qa": "active",
                 "college_recommendations": "active",
-                "chat_memory": "active",
-                "preference_extraction": "active"
+                "context_awareness": "active",
+                "dynamic_greetings": "active",
+                "title_generation": "active",
+                "chat_memory": "active"
             }
         }
     except Exception as e:
@@ -1203,8 +1045,8 @@ if __name__ == "__main__":
         logger.warning(f"Excel file not found at {EXCEL_PATH}")
         logger.warning("College recommendations will use OpenAI knowledge only")
     
-    logger.info("Starting Academic Chatbot API...")
-    logger.info("Features: Academic Q&A + College Recommendations")
+    logger.info("Starting Enhanced Academic Chatbot API...")
+    logger.info("Features: Friendly Conversations + Academic Q&A + College Recommendations + Context Awareness + Title Generation")
     logger.info("Access the API at: http://localhost:8000")
     logger.info("API Documentation: http://localhost:8000/docs")
     
