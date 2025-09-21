@@ -64,6 +64,7 @@ class ChatResponse(BaseModel):
     is_recommendation: bool
     timestamp: str
     recommendations: Optional[List[CollegeRecommendation]] = []
+    chat_title: Optional[str] = None
 
 class UserPreferences(BaseModel):
     """User preferences extracted from conversation"""
@@ -486,6 +487,194 @@ Only redirect to college recommendations when users specifically ask for a list 
             | StrOutputParser()
         )
     
+    def is_greeting_or_casual_question(self, query: str) -> bool:
+        """Check if query is a greeting or casual conversational question"""
+        greeting_patterns = [
+            # Basic greetings
+            'hi', 'hello', 'hey', 'hii', 'hiii', 'hiiii', 'helo', 'hellooo',
+            # Time-based greetings
+            'good morning', 'good afternoon', 'good evening', 'good night',
+            # Casual greetings
+            'greetings', 'howdy', 'what\'s up', 'whats up', 'sup', 'yo',
+            # Conversational questions
+            'how are you', 'how do you do', 'how are you doing', 'how\'s it going', 
+            'hows it going', 'how is your day', 'how\'s your day', 'hows your day',
+            'how was your day', 'how\'s your day going', 'hows your day going',
+            'what are you doing', 'what\'s happening', 'whats happening',
+            'how are things', 'how are you feeling', 'are you okay', 'are you ok',
+            'nice to meet you', 'pleased to meet you', 'good to see you',
+            # Status questions
+            'how are you today', 'how have you been', 'how\'s everything',
+            'hows everything', 'what\'s new', 'whats new', 'how\'s life',
+            'hows life', 'all good', 'you good', 'you ok'
+        ]
+        
+        query_lower = query.lower().strip()
+        
+        # Direct matches
+        if query_lower in greeting_patterns:
+            return True
+            
+        # Check for patterns that start the message
+        for pattern in greeting_patterns:
+            if query_lower.startswith(pattern + ' ') or query_lower.startswith(pattern + '?'):
+                return True
+        
+        # Short informal greetings (1-3 words)
+        words = query_lower.split()
+        if len(words) <= 3:
+            greeting_words = ['hi', 'hey', 'hello', 'sup', 'yo', 'morning', 'evening', 'afternoon']
+            if any(word in greeting_words for word in words):
+                return True
+                
+        return False
+    
+    def generate_conversational_response(self, query: str, chat_id: str) -> str:
+        """Generate friendly, conversational responses to greetings and casual questions"""
+        import random
+        
+        query_lower = query.lower().strip()
+        previous_messages = self.db_manager.get_chat_messages(chat_id)
+        is_returning_user = len(previous_messages) > 0
+        
+        # Handle "how are you" type questions
+        if any(phrase in query_lower for phrase in ['how are you', 'how do you do', 'how are you doing', 'how\'s it going', 'hows it going']):
+            responses = [
+                "I'm doing great, thank you for asking! I'm energized and ready to help you with any academic questions or college guidance you need. How can I assist you today?",
+                "I'm fantastic! I love helping students with their academic journey. Whether you need study tips, subject explanations, or college recommendations, I'm here for you. What's on your mind?",
+                "I'm wonderful, thanks! I'm having a good day helping students learn and grow. I'm excited to help you too - what academic topic interests you today?",
+                "I'm doing excellent! Every day is a great day when I get to help with education and learning. How about you? What brings you here today?",
+                "I'm thriving! I really enjoy our academic conversations and helping students succeed. What would you like to explore or learn about today?"
+            ]
+        
+        # Handle "how's your day" type questions
+        elif any(phrase in query_lower for phrase in ['how is your day', 'how\'s your day', 'hows your day', 'how was your day']):
+            responses = [
+                "My day has been wonderful! I've been helping students with everything from calculus problems to college applications. It's been really fulfilling! How's your day going?",
+                "It's been an amazing day! I've had great conversations about science, literature, study strategies, and college planning. I love what I do! What about your day?",
+                "My day has been fantastic! I've been busy helping students tackle challenging subjects and find the right colleges for their goals. How has your day been?",
+                "It's been a great day filled with interesting academic discussions! From physics questions to MBA program recommendations, every conversation teaches me something new. How are you doing today?"
+            ]
+        
+        # Handle "what are you doing" type questions
+        elif any(phrase in query_lower for phrase in ['what are you doing', 'what\'s happening', 'whats happening', 'what\'s up', 'whats up', 'sup']):
+            responses = [
+                "Just here ready to help with academic questions! I love discussing everything from complex math problems to college admissions strategies. What's up with you?",
+                "I'm here waiting to dive into some great academic discussions! Whether you need help with homework, study techniques, or college planning, I'm all ears. What's going on?",
+                "Nothing much, just excited to help students learn and grow! I'm ready to tackle any subject or help with college recommendations. What brings you here today?",
+                "I'm here doing what I love most - helping with education! From science concepts to college guidance, I'm ready for any academic challenge. What's happening with you?"
+            ]
+        
+        # Handle basic greetings
+        else:
+            if is_returning_user:
+                responses = [
+                    "Hey there! Welcome back! It's great to see you again. I'm excited to continue our academic journey together - what shall we explore today?",
+                    "Hello! So good to have you back! I'm ready to help with any new questions, whether they're about studies, research, or college planning. What's on your agenda?",
+                    "Hi! Welcome back! I've been looking forward to our next conversation. Ready to tackle some interesting academic topics together?",
+                    "Hey! Great to see you again! I'm here and eager to help with whatever academic challenge you're facing today. What can we work on together?",
+                    "Hello again! I'm so glad you're back! Whether you need help with subjects, study strategies, or college advice, I'm ready to dive in. What's your focus today?"
+                ]
+            else:
+                responses = [
+                    "Hello! It's wonderful to meet you! I'm your academic companion, and I'm genuinely excited to help you with your educational journey. What academic topic can we explore together today?",
+                    "Hi there! Welcome! I'm thrilled you're here! I specialize in making learning engaging and helping with everything from subject questions to college guidance. What interests you most?",
+                    "Hey! So nice to meet you! I'm passionate about education and love helping students succeed. Whether you need study help, subject explanations, or college advice, I'm here for you. What shall we start with?",
+                    "Hello and welcome! I'm really happy you're here! I'm your academic assistant who genuinely cares about your success. From homework help to college planning, I'm ready to support you. What's your biggest academic interest right now?",
+                    "Hi! It's great to have you here! I'm your friendly academic guide, ready to make learning fun and help you achieve your educational goals. What would you like to discover together today?"
+                ]
+        
+        # Add time-based greeting occasionally
+        import datetime
+        current_hour = datetime.datetime.now().hour
+        
+        if random.choice([True, False]):  # 50% chance
+            if 5 <= current_hour < 12:
+                time_greeting = "Good morning! "
+            elif 12 <= current_hour < 17:
+                time_greeting = "Good afternoon! "
+            elif 17 <= current_hour < 21:
+                time_greeting = "Good evening! "
+            else:
+                time_greeting = ""
+            
+            if time_greeting:
+                selected_response = time_greeting + random.choice(responses)
+            else:
+                selected_response = random.choice(responses)
+        else:
+            selected_response = random.choice(responses)
+        
+        return selected_response
+    
+    def generate_chat_title(self, chat_id: str) -> str:
+        """Generate a meaningful title based on the main conversation topics"""
+        try:
+            messages = self.db_manager.get_chat_messages(chat_id)
+            
+            # Filter out greetings and get substantial messages
+            substantial_messages = []
+            for msg in messages:
+                if msg['type'] == 'human' and len(msg['content'].split()) > 3:
+                    # Skip obvious greetings
+                    content_lower = msg['content'].lower()
+                    greeting_indicators = ['hi', 'hello', 'hey', 'how are you', 'good morning', 'good evening']
+                    if not any(indicator in content_lower for indicator in greeting_indicators):
+                        substantial_messages.append(msg['content'])
+            
+            if not substantial_messages:
+                return "New Conversation"
+            
+            # Use OpenAI to generate a concise title based on the conversation
+            conversation_text = " | ".join(substantial_messages[:5])  # Use first 5 substantial messages
+            
+            prompt = f"""
+            Generate a short, descriptive title (3-6 words) for this academic conversation based on the main topics discussed:
+            
+            Conversation snippets: {conversation_text}
+            
+            The title should reflect the main academic subject or topic. Examples:
+            - "Mathematics Problem Solving"
+            - "College Engineering Programs"
+            - "Biology Study Strategies"
+            - "MBA Application Guidance"
+            - "Chemistry Homework Help"
+            - "Computer Science Career"
+            
+            Return only the title, nothing else.
+            """
+            
+            response = openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=50
+            )
+            
+            title = response.choices[0].message.content.strip().replace('"', '')
+            
+            # Fallback titles based on keywords if OpenAI fails
+            if not title or len(title) < 3:
+                conversation_lower = conversation_text.lower()
+                if any(word in conversation_lower for word in ['college', 'university', 'admission', 'recommend']):
+                    return "College Guidance"
+                elif any(word in conversation_lower for word in ['math', 'calculus', 'algebra', 'geometry']):
+                    return "Mathematics Help"
+                elif any(word in conversation_lower for word in ['science', 'physics', 'chemistry', 'biology']):
+                    return "Science Discussion"
+                elif any(word in conversation_lower for word in ['study', 'exam', 'preparation', 'tips']):
+                    return "Study Strategies"
+                elif any(word in conversation_lower for word in ['career', 'job', 'profession']):
+                    return "Career Planning"
+                else:
+                    return "Academic Discussion"
+            
+            return title
+            
+        except Exception as e:
+            logger.error(f"Error generating chat title: {e}")
+            return "Academic Chat"
+    
     def is_academic_query(self, query: str) -> bool:
         """Check if query is academic"""
         try:
@@ -706,7 +895,7 @@ Only redirect to college recommendations when users specifically ask for a list 
                 "admission_process": admission_process,
                 "approximate_fees": approximate_fees,
                 "notable_features": notable_features,
-                "source": website if website != "Website information not available" else "OpenAI database"
+                "source": website if website != "Website information not available" else "database"
             }
             
         except Exception as e:
@@ -776,6 +965,25 @@ Only redirect to college recommendations when users specifically ask for a list 
         
         timestamp = datetime.now().isoformat()
         
+        # Check if it's a greeting or casual conversational question first
+        if self.is_greeting_or_casual_question(message):
+            response = self.generate_conversational_response(message, chat_id)
+            
+            self.db_manager.save_message(chat_id, 'human', message, True, False)
+            self.db_manager.save_message(chat_id, 'ai', response, True, False)
+            
+            # Generate title after a few meaningful exchanges
+            chat_title = self.generate_chat_title(chat_id)
+            
+            return {
+                "response": response,
+                "is_academic": True,  # Treat greetings as academic-friendly
+                "is_recommendation": False,
+                "timestamp": timestamp,
+                "recommendations": [],
+                "chat_title": chat_title
+            }
+        
         # Check if query is academic
         is_academic = self.is_academic_query(message)
         
@@ -794,12 +1002,15 @@ Could you please ask me something related to academics or learning?"""
             self.db_manager.save_message(chat_id, 'human', message, is_academic, False)
             self.db_manager.save_message(chat_id, 'ai', response, is_academic, False)
             
+            chat_title = self.generate_chat_title(chat_id)
+            
             return {
                 "response": response,
                 "is_academic": False,
                 "is_recommendation": False,
                 "timestamp": timestamp,
-                "recommendations": []
+                "recommendations": [],
+                "chat_title": chat_title
             }
         
         # Save user message
@@ -862,12 +1073,16 @@ Could you please ask me something related to academics or learning?"""
             # Save AI response
             self.db_manager.save_message(chat_id, 'ai', final_response, True, is_recommendation)
             
+            # Generate title based on the conversation content
+            chat_title = self.generate_chat_title(chat_id)
+            
             return {
                 "response": final_response,
                 "is_academic": True,
                 "is_recommendation": is_recommendation,
                 "timestamp": timestamp,
-                "recommendations": recommendations
+                "recommendations": recommendations,
+                "chat_title": chat_title
             }
             
         except Exception as e:
@@ -875,12 +1090,15 @@ Could you please ask me something related to academics or learning?"""
             error_response = "I apologize, but I encountered an error while processing your request. Please try again."
             self.db_manager.save_message(chat_id, 'ai', error_response, True, False)
             
+            chat_title = self.generate_chat_title(chat_id)
+            
             return {
                 "response": error_response,
                 "is_academic": True,
                 "is_recommendation": False,
                 "timestamp": timestamp,
-                "recommendations": []
+                "recommendations": [],
+                "chat_title": chat_title
             }
 
 # Initialize environment variables
