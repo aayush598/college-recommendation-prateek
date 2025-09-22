@@ -975,19 +975,6 @@ async def chat_endpoint(request: ChatRequest, chat_id: str = Query(..., descript
         logger.error(f"Chat endpoint error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/chat/{chat_id}/title")
-async def get_chat_title(chat_id: str):
-    """Get the title for a specific chat"""
-    try:
-        title = chatbot.db_manager.get_chat_title(chat_id)
-        return {
-            "chat_id": chat_id,
-            "title": title or "New Conversation",
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Error getting chat title: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/health")
 async def health_check():
